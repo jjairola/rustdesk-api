@@ -1,0 +1,46 @@
+# Example Caddy front for rustdesk-api.
+#
+# Caddy gets you automatic TLS with almost no config. The catch: its core has
+# `allow`/`deny`-style matching but NO rate limiting — that needs the
+# third-party `caddy-ratelimit` module, so you must build Caddy with it:
+#
+#   xcaddy build --with github.com/mholt/caddy-ratelimit
+#
+# If you don't want a custom Caddy build, use nginx.conf.example instead, or do
+# the IP allowlist here in Caddy and let something upstream handle rate limits.
+#
+# Pair this with:  RDAPI_BIND=127.0.0.1:21114
+# so the app is only reachable through Caddy.
+#
+# This assumes Caddy is the internet-facing edge. Behind another proxy/CDN, set
+# `trusted_proxies` in the global options so client_ip is the real client.
+
+rd.example.com {                            # <-- your hostname; Caddy fetches a cert for it
+
+	# --- device registration: trusted networks only ---------------------
+	# Unauthenticated, device-facing endpoints. Restrict to your LAN + VPN so
+	# strangers can't inject address-book entries. A machine you want to be
+	# controllable must reach the server from one of these networks.
+	@registration path /api/sysinfo /api/sysinfo_ver /api/heartbeat
+	@untrusted_reg {
+		path /api/sysinfo /api/sysinfo_ver /api/heartbeat
+		not client_ip 192.168.1.0/24 10.8.0.0/24   # <-- your LAN, VPN
+	}
+	respond @untrusted_reg 403
+
+	# --- login: rate limited (requires caddy-ratelimit) ------------------
+	# 10 requests/min per client IP. Delete this block if you built Caddy
+	# without the module.
+	rate_limit {
+		zone rd_login {
+			match {
+				path /api/login
+			}
+			key    {remote_host}
+			events 10
+			window 1m
+		}
+	}
+
+	reverse_proxy 127.0.0.1:21114
+}

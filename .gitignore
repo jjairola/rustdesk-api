@@ -1,0 +1,14 @@
+# Rust build output
+/target
+
+# SQLite database (created at runtime; holds accounts + device registrations)
+*.db
+*.db-wal
+*.db-shm
+
+# Local configuration / secrets
+.env
+
+# OS / editor cruft
+.DS_Store
+*.swp

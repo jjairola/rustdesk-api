@@ -1,0 +1,32 @@
+services:
+  rustdesk-api:
+    build: .
+    image: rustdesk-api:latest
+    container_name: rustdesk-api
+    restart: unless-stopped
+    ports:
+      - "21114:21114"
+    volumes:
+      - rustdesk-api-data:/data
+    environment:
+      RDAPI_DB: sqlite:///data/rustdesk-api.db
+      RDAPI_BIND: 0.0.0.0:21114
+
+      # Creates the first account on first boot only — it is ignored once any
+      # user exists, so it can't reset a password later. Prefer creating users
+      # with the CLI instead:
+      #   docker compose exec rustdesk-api rustdesk-api user add alice
+      # RDAPI_ADMIN_USER: admin
+      # RDAPI_ADMIN_PASSWORD: change-me
+
+      # Sessions expire after this many days (default 30).
+      # RDAPI_TOKEN_TTL_DAYS: "30"
+
+      # Hide workstations that haven't reported in for this many days.
+      # 0 (default) keeps every machine that ever registered.
+      # RDAPI_DEVICE_STALE_DAYS: "30"
+
+      # RUST_LOG: "rustdesk_api=info,tower_http=warn"
+
+volumes:
+  rustdesk-api-data:

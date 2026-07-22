@@ -1,0 +1,27 @@
+[Unit]
+# Redirects inbound RustDesk rendezvous TCP to the KeyExchange shim, so that
+# clients logged in to a self-hosted API server can connect. See main.rs for
+# the full explanation.
+#
+#   client --TCP 21116--> [this rule] --> shim :21126 --> 127.0.0.1:21116 (hbbs)
+#   client --UDP 21116-------------------------------->  hbbs, untouched
+#
+# The rule matches only traffic arriving on the LAN interface, so the shim's own
+# forward to 127.0.0.1:21116 travels over loopback and is not redirected back
+# into itself.
+Description=DNAT inbound RustDesk rendezvous TCP to the KeyExchange shim
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=IFACE=eth0
+Environment=FROM_PORT=21116
+Environment=TO_PORT=21126
+# -C tests for the rule first, so restarting never stacks duplicates.
+ExecStart=/bin/sh -c '/usr/sbin/iptables -t nat -C PREROUTING -i ${IFACE} -p tcp --dport ${FROM_PORT} -j REDIRECT --to-ports ${TO_PORT} 2>/dev/null || /usr/sbin/iptables -t nat -I PREROUTING 1 -i ${IFACE} -p tcp --dport ${FROM_PORT} -j REDIRECT --to-ports ${TO_PORT}'
+ExecStop=/bin/sh -c '/usr/sbin/iptables -t nat -D PREROUTING -i ${IFACE} -p tcp --dport ${FROM_PORT} -j REDIRECT --to-ports ${TO_PORT} 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

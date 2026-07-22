@@ -1,0 +1,99 @@
+# Example nginx front for rustdesk-api.
+#
+# Terminates TLS on 443, rate-limits login, and restricts device registration
+# to trusted networks. Drop this in /etc/nginx/conf.d/rustdesk.conf (that path
+# is included inside the http{} block, which is where the limit_req_zone lines
+# must live) and adjust the marked values.
+#
+# This assumes nginx is the internet-facing edge, so $remote_addr is the real
+# client IP. If you sit behind Cloudflare or another load balancer, that is no
+# longer true — pull the real IP in with the realip module first:
+#
+#   set_real_ip_from <that proxy's subnet>;
+#   real_ip_header   X-Forwarded-For;
+#
+# otherwise the allow/deny rules below match the upstream proxy, not the client.
+#
+# Pair this with:  RDAPI_BIND=127.0.0.1:21114
+# so the app is only reachable through nginx, never directly.
+
+# --- rate-limit zones (http context) --------------------------------------
+# Keyed by client IP. 10m of state holds ~160k IPs.
+#
+# login: brute-force defense. 10/min is generous for a human, ruinous for a
+# script. burst=5 absorbs a few fat-fingered retries without a 503.
+limit_req_zone $binary_remote_addr zone=rd_login:10m rate=10r/m;
+#
+# everything else: a flood ceiling, not a real constraint. A controllable
+# machine heartbeats every ~15s; even 30 of them behind one NAT is ~2 req/s
+# aggregate, far under this. Raise it before you'd ever legitimately hit it.
+limit_req_zone $binary_remote_addr zone=rd_api:10m rate=20r/s;
+
+# --- HTTP: ACME challenge + redirect to HTTPS -----------------------------
+server {
+    listen 80;
+    listen [::]:80;
+    server_name rd.example.com;                    # <-- your hostname
+
+    # Let certbot answer here without redirecting.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# --- HTTPS ----------------------------------------------------------------
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name rd.example.com;                    # <-- your hostname
+
+    ssl_certificate     /etc/letsencrypt/live/rd.example.com/fullchain.pem;   # <-- your certs
+    ssl_certificate_key /etc/letsencrypt/live/rd.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # sysinfo payloads are small; this just caps abuse.
+    client_max_body_size 256k;
+
+    # Pass the real client IP through so the app's logs (and any in-app CIDR
+    # guard) see it rather than 127.0.0.1.
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # --- device registration: trusted networks only ----------------------
+    # These are the unauthenticated, device-facing endpoints. Locking them to
+    # your LAN (and VPN) is what stops strangers on the internet injecting
+    # entries into the shared address book.
+    #
+    # Consequence to accept: a machine you want to be *controllable* must reach
+    # the server from an allowed network. Roaming laptops you want to control
+    # therefore have to come in over the VPN. Machines that only *connect out*
+    # don't register and are unaffected — they use /api/login below.
+    location ~ ^/api/(sysinfo|sysinfo_ver|heartbeat)$ {
+        allow 192.168.1.0/24;          # <-- your LAN
+        allow 10.8.0.0/24;             # <-- your VPN subnet (delete if none)
+        deny  all;
+        proxy_pass http://127.0.0.1:21114;
+    }
+
+    # --- login: throttled, but open to the world -------------------------
+    location = /api/login {
+        limit_req zone=rd_login burst=5 nodelay;
+        proxy_pass http://127.0.0.1:21114;
+    }
+
+    # --- everything else: authenticated, open, loosely flood-capped ------
+    # Address-book reads, currentUser, logout, audit sinks. These must work
+    # from anywhere — that is the point of remote access — and are already
+    # gated by the bearer token.
+    location / {
+        limit_req zone=rd_api burst=40 nodelay;
+        proxy_pass http://127.0.0.1:21114;
+    }
+}
